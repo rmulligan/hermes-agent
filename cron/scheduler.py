@@ -517,8 +517,18 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     script_timeout = _get_script_timeout()
 
     try:
+        # Detect script type and use appropriate interpreter
+        # Check file extension first, then fall back to shebang detection
+        suffix = path.suffix.lower()
+        if suffix in {'.sh', '.bash'}:
+            # Shell script - use bash
+            cmd = ['bash', str(path)]
+        else:
+            # Assume Python script
+            cmd = [sys.executable, str(path)]
+        
         result = subprocess.run(
-            [sys.executable, str(path)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=script_timeout,

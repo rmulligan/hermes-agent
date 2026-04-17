@@ -52,6 +52,10 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # Lilly-specific retrieval (email, Limitless pendant, LinkedIn messages)
+    "lilly_search_emails",
+    "lilly_search_limitless",
+    "lilly_search_linkedin",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
