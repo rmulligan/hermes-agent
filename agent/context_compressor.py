@@ -473,8 +473,7 @@ class ContextCompressor(ContextEngine):
                         # _compressed marker plus the original byte
                         # count, which is all the model needs to know
                         # not to re-run the call.
-                        import json as _json
-                        tc = {**tc, "function": {**tc["function"], "arguments": _json.dumps(
+                        tc = {**tc, "function": {**tc["function"], "arguments": json.dumps(
                             {"_compressed": f"arguments truncated from {len(args)} bytes for context compression"}
                         )}}
                         modified = True

@@ -3641,6 +3641,52 @@ class AIAgent:
                 "Pre-call sanitizer: added %d stub tool result(s)",
                 len(missing_results),
             )
+
+        # 3. Repair malformed tool_call arguments.
+        #
+        # The context compressor used to slice mid-string and append
+        # "...[truncated]" which produced invalid JSON like:
+        #   {"old_text": "Self-reflection: Three-layer narrative...[truncated]
+        # Sessions that still contain these pre-fix artifacts cause
+        # the serving backend to reject the request with HTTP 500
+        # "parse error... missing closing quote" because the model
+        # sees the broken pattern in its prompt and copies it.
+        #
+        # Heal on load: any tool_call whose arguments string doesn't
+        # parse as JSON gets replaced with a valid marker object. The
+        # companion fix in agent/context_compressor.py stops NEW
+        # corruption; this sanitizer handles sessions written before
+        # that landed.
+        import json as _json
+        repaired_count = 0
+        for msg in messages:
+            if msg.get("role") != "assistant":
+                continue
+            tcs = msg.get("tool_calls")
+            if not tcs:
+                continue
+            for tc in tcs:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                if not isinstance(fn, dict):
+                    continue
+                args = fn.get("arguments")
+                if not isinstance(args, str) or not args:
+                    continue
+                try:
+                    _json.loads(args)
+                except (_json.JSONDecodeError, ValueError):
+                    fn["arguments"] = _json.dumps({
+                        "_compressed": f"arguments were malformed in session history ({len(args)} bytes); repaired on load",
+                    })
+                    repaired_count += 1
+        if repaired_count:
+            logger.info(
+                "Pre-call sanitizer: repaired %d malformed tool_call arguments",
+                repaired_count,
+            )
+
         return messages
 
     @staticmethod
