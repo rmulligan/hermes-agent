@@ -459,7 +459,23 @@ class ContextCompressor(ContextEngine):
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
                     if len(args) > 500:
-                        tc = {**tc, "function": {**tc["function"], "arguments": args[:200] + "...[truncated]"}}
+                        # Produce VALID JSON for the truncated arguments.
+                        # The previous implementation emitted
+                        #   args[:200] + "...[truncated]"
+                        # which is malformed JSON the server parser can't
+                        # close. When the compressed history was re-sent
+                        # to the model, the model copied the broken
+                        # pattern and produced identically-truncated
+                        # output, causing the server to reject its
+                        # response with HTTP 500: "missing closing quote".
+                        # The compression signal ("this call happened
+                        # with long args") is preserved via the
+                        # _compressed marker plus the original byte
+                        # count, which is all the model needs to know
+                        # not to re-run the call.
+                        tc = {**tc, "function": {**tc["function"], "arguments": json.dumps(
+                            {"_compressed": f"arguments truncated from {len(args)} bytes for context compression"}
+                        )}}
                         modified = True
                 new_tcs.append(tc)
             if modified:
