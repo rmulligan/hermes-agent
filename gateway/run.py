@@ -4085,12 +4085,11 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
-            # Emit agent:end hook
-            await self.hooks.emit("agent:end", {
-                **hook_ctx,
-                "response": (response or "")[:500],
-            })
-            
+            # agent:end hook emission moved below the
+            # compression-exhaustion post-processing (see the block
+            # that may append an auto-reset notice to `response`)
+            # so hooks always see the user-visible text.
+
             # Check for pending process watchers (check_interval on background processes)
             try:
                 from tools.process_registry import process_registry
@@ -4164,6 +4163,47 @@ class GatewayRunner:
                     "maximum context size and could not be compressed further. "
                     "Your next message will start a fresh session."
                 )
+
+            # Emit agent:end hook now — response is finalized.
+            #
+            # The prior truncation to 500 chars silently clipped long
+            # replies before hooks could see them. For hook use-cases
+            # that need the whole reply (TTS narration, dashboards,
+            # cross-session bridges) a 500-char preview was a leaky
+            # default. Hooks that want a preview can trim on their side.
+            #
+            # Tunable via HERMES_HOOK_RESPONSE_MAX_CHARS for callers
+            # who need to cap memory footprint on very long replies.
+            # 0 or missing = no cap.
+            #
+            # Strip transport-only markers (`[[audio_as_voice]]`,
+            # `MEDIA:<path>`) via BasePlatformAdapter.extract_media so
+            # hooks see exactly the user-visible text and paths with
+            # spaces are handled correctly (the prior regex broke on
+            # whitespace in path components).
+            #
+            # Pass session_entry.session_id explicitly — hook_ctx was
+            # built earlier in the turn; if context compression
+            # rotated the session id mid-run, the stale id in hook_ctx
+            # would misreport to consumers.
+            _, hook_response = BasePlatformAdapter.extract_media(response or "")
+            hook_response = hook_response.strip()
+            try:
+                cap = int(os.environ.get("HERMES_HOOK_RESPONSE_MAX_CHARS", "0"))
+                if cap > 0 and len(hook_response) > cap:
+                    hook_response = hook_response[:cap]
+            except (TypeError, ValueError):
+                pass
+            _final_session_id = (
+                getattr(session_entry, "session_id", None)
+                if session_entry is not None
+                else hook_ctx.get("session_id")
+            )
+            await self.hooks.emit("agent:end", {
+                **hook_ctx,
+                "session_id": _final_session_id,
+                "response": hook_response,
+            })
 
             ts = datetime.now().isoformat()
             
