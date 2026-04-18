@@ -4174,22 +4174,34 @@ class GatewayRunner:
             #
             # Tunable via HERMES_HOOK_RESPONSE_MAX_CHARS for callers
             # who need to cap memory footprint on very long replies.
-            # 0 or missing = no cap. Strip transport-only markers
-            # (`[[audio_as_voice]]`, `MEDIA:<path>`) so hooks see
-            # user-visible text only.
-            hook_response = re.sub(
-                r"(?m)^\[\[audio_as_voice\]\]\s*$|^MEDIA:\S+\s*$",
-                "",
-                response or "",
-            ).strip()
+            # 0 or missing = no cap.
+            #
+            # Strip transport-only markers (`[[audio_as_voice]]`,
+            # `MEDIA:<path>`) via BasePlatformAdapter.extract_media so
+            # hooks see exactly the user-visible text and paths with
+            # spaces are handled correctly (the prior regex broke on
+            # whitespace in path components).
+            #
+            # Pass session_entry.session_id explicitly — hook_ctx was
+            # built earlier in the turn; if context compression
+            # rotated the session id mid-run, the stale id in hook_ctx
+            # would misreport to consumers.
+            _, hook_response = BasePlatformAdapter.extract_media(response or "")
+            hook_response = hook_response.strip()
             try:
                 cap = int(os.environ.get("HERMES_HOOK_RESPONSE_MAX_CHARS", "0"))
                 if cap > 0 and len(hook_response) > cap:
                     hook_response = hook_response[:cap]
             except (TypeError, ValueError):
                 pass
+            _final_session_id = (
+                getattr(session_entry, "session_id", None)
+                if session_entry is not None
+                else hook_ctx.get("session_id")
+            )
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
+                "session_id": _final_session_id,
                 "response": hook_response,
             })
 
