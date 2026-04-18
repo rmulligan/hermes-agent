@@ -8795,13 +8795,39 @@ class GatewayRunner:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                # Fire a hook event BEFORE downstream routing so
+                # consumers (TTS narration, logging, dashboards) can
+                # see interim replies. Without this, hooks only saw
+                # agent:end — the mid-iteration "here's what I found
+                # so far" posts were invisible to the hook layer even
+                # though they appear as user-visible messages on
+                # Matrix/Telegram/etc. Best-effort: hook failure never
+                # blocks the downstream send below.
+                interim_text = str(text or "").strip()
+                if interim_text:
+                    try:
+                        _interim_ctx = {
+                            "platform": source.platform.value if source.platform else "",
+                            "user_id": getattr(source, "user_id", "") or "",
+                            "session_id": session_id,
+                            "chat_id": getattr(source, "chat_id", "") or "",
+                            "response": interim_text,
+                            "already_streamed": bool(already_streamed),
+                        }
+                        asyncio.run_coroutine_threadsafe(
+                            self.hooks.emit("agent:interim_reply", _interim_ctx),
+                            _loop_for_step,
+                        )
+                    except Exception as _e:
+                        logger.debug("agent:interim_reply hook emit failed: %s", _e)
+
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
                         _stream_consumer.on_commentary(text)
                     return
-                if already_streamed or not _status_adapter or not str(text or "").strip():
+                if already_streamed or not _status_adapter or not interim_text:
                     return
                 try:
                     asyncio.run_coroutine_threadsafe(
