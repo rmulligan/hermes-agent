@@ -46,9 +46,29 @@ def _run_boot_agent(content: str) -> None:
     """Spawn a one-shot agent session to execute the boot instructions."""
     try:
         from run_agent import AIAgent
+        from gateway.run import (
+            _resolve_gateway_model,
+            _resolve_runtime_agent_kwargs,
+        )
+
+        # Without resolving model/provider from config.yaml, AIAgent's
+        # `model` kwarg defaults to "" and the first outbound
+        # chat/completions call fails with HTTP 400: "missing or
+        # invalid 'model' key". Use the same canonical resolvers that
+        # session-scoped agent instances use in _resolve_session_agent_runtime.
+        model = _resolve_gateway_model()
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        if not model or not runtime_kwargs.get("api_key"):
+            logger.warning(
+                "boot-md: skipping — no model resolved (%r) or no api_key",
+                model,
+            )
+            return
 
         prompt = _build_boot_prompt(content)
         agent = AIAgent(
+            **runtime_kwargs,
+            model=model,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
