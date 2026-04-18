@@ -58,6 +58,21 @@ def _run_boot_agent(content: str) -> None:
         # session-scoped agent instances use in _resolve_session_agent_runtime.
         model = _resolve_gateway_model()
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+
+        # Mirror the fallback used by _resolve_session_agent_runtime
+        # when the user authenticated a provider but never ran
+        # `hermes model` to set an explicit default. Without this,
+        # users with a valid provider but no configured model hit
+        # the boot-md skip path instead of running the boot hook.
+        if not model and runtime_kwargs.get("provider"):
+            try:
+                from hermes_cli.models import get_default_model_for_provider
+                model = get_default_model_for_provider(runtime_kwargs["provider"])
+            except Exception as e:
+                logger.debug(
+                    "boot-md: provider default model lookup failed: %s", e,
+                )
+
         if not model or not runtime_kwargs.get("api_key"):
             logger.warning(
                 "boot-md: skipping — no model resolved (%r) or no api_key",
