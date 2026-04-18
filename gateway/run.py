@@ -3971,12 +3971,37 @@ class GatewayRunner:
             return
 
         try:
-            # Emit agent:start hook
+            # Emit agent:start hook.
+            #
+            # - Include chat_id, thread_id, and message_event_id so
+            #   hooks that want to construct Matrix m.in_reply_to
+            #   (or per-platform equivalents) can do so without
+            #   having to peer into the source object or event.
+            #   Specifically: the matrix-session-watchdog hook needs
+            #   event_id to let Ryan tap-reply a resumption nudge.
+            # - Drop the [:500] cap on message. The prior truncation
+            #   matched the agent:end cap we already lifted in
+            #   gateway/run.py for hooks that want full context (TTS
+            #   narration, cross-session replay, dashboards). Hooks
+            #   that want a preview trim on their side; this default
+            #   now uses HERMES_HOOK_MESSAGE_MAX_CHARS if set
+            #   (0 or missing = no cap; same convention as
+            #   HERMES_HOOK_RESPONSE_MAX_CHARS).
+            hook_message = message_text or ""
+            try:
+                _cap = int(os.environ.get("HERMES_HOOK_MESSAGE_MAX_CHARS", "0"))
+                if _cap > 0 and len(hook_message) > _cap:
+                    hook_message = hook_message[:_cap]
+            except (TypeError, ValueError):
+                pass
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
-                "message": message_text[:500],
+                "chat_id": getattr(source, "chat_id", "") or "",
+                "thread_id": getattr(source, "thread_id", "") or "",
+                "message_event_id": getattr(event, "message_id", "") or "",
+                "message": hook_message,
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
