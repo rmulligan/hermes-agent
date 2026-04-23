@@ -155,6 +155,24 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
+def _compute_parent_effective_toolsets(parent_agent) -> set:
+    """Resolve the parent's effective toolsets — the set a child can
+    legally inherit. Mirrors the logic in `_build_child_agent` so
+    pre-validation in `delegate_task` sees the same answer the child
+    builder will.
+    """
+    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    if parent_enabled is not None:
+        return set(parent_enabled)
+    if parent_agent and hasattr(parent_agent, "valid_tool_names"):
+        import model_tools
+        return {
+            ts for name in parent_agent.valid_tool_names
+            if (ts := model_tools.get_toolset_for_tool(name)) is not None
+        }
+    return set(DEFAULT_TOOLSETS)
+
+
 def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -289,6 +307,24 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    # Defense in depth — any path producing an empty child toolset
+    # would send a request with no `tools=[...]` parameter and the
+    # child LLM would hallucinate tool syntax in text output (see
+    # comment in `delegate_task` for the observed failure mode).
+    # `delegate_task` pre-validates requested toolsets, but an empty
+    # set can still happen if the parent somehow has zero tools.
+    # Refuse to build a toolless child; the error propagates back
+    # to the parent so it knows what went wrong.
+    if not child_toolsets:
+        raise ValueError(
+            "Cannot build subagent with empty toolsets. "
+            f"parent_toolsets={sorted(parent_toolsets) if parent_toolsets else []}, "
+            f"requested={sorted(toolsets) if toolsets else []}. "
+            "A toolless child cannot tool-call and will hallucinate "
+            "tool-call text. Adjust the parent's enabled_toolsets or "
+            "the delegate_task `toolsets` argument."
+        )
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
@@ -691,6 +727,32 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Validate requested toolsets against parent's effective set.
+    #
+    # Without this, a parent that calls `delegate_task(toolsets=["web"])`
+    # when "web" isn't in its own enabled toolsets silently gets a child
+    # with ZERO tools — `self.tools` is empty, no `tools` key is added
+    # to the OpenAI request, and Magnum/Qwen/etc hallucinate tool-call
+    # syntax in free-text (observed 2026-04-22: `<tool_call>` /
+    # `<function=web_search>` / ```json[{"name":"tavily_search"...}]```
+    # instead of real OpenAI `tool_calls` — result: `tool_trace=[]`,
+    # no side effects, parent falls back to doing the work itself).
+    # Fail loudly so the parent can retry with valid toolsets.
+    parent_effective = _compute_parent_effective_toolsets(parent_agent)
+    for i, task in enumerate(task_list):
+        requested = task.get("toolsets") or toolsets or []
+        if not requested:
+            continue
+        survivors = [t for t in requested if t in parent_effective]
+        if not survivors:
+            return tool_error(
+                f"Task {i}: none of the requested toolsets "
+                f"{sorted(requested)!r} are available to this agent. "
+                f"Available toolsets: {sorted(parent_effective)!r}. "
+                f"Either drop `toolsets` to inherit the parent's set, "
+                f"or pick from the available list."
+            )
 
     overall_start = time.monotonic()
     results = []
